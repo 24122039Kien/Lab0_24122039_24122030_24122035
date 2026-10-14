@@ -1,0 +1,143 @@
+% Biên dịch bằng pdflatex (hoặc Overleaf). Nếu dùng XeLaTeX, bỏ 2 dòng inputenc/fontenc.
+\documentclass[12pt,a4paper]{article}
+\usepackage[utf8]{inputenc}
+\usepackage[T5]{fontenc}
+\usepackage{lmodern}
+\usepackage[a4paper,margin=2.5cm]{geometry}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{enumitem}
+\usepackage{graphicx}
+\usepackage{xcolor}
+\usepackage{fancyvrb}
+\usepackage[hidelinks]{hyperref}
+\usepackage{setspace}
+\setstretch{1.15}
+\setlist{itemsep=2pt,topsep=3pt}
+
+\newcommand{\code}[1]{\texttt{#1}}
+
+\title{\textbf{BÁO CÁO LAB 0 -- SYSTEM CALL (xv6)}\\[4pt]
+\large Môn Hệ điều hành -- Khoa Công nghệ Thông tin, ĐH Khoa học Tự nhiên TP.HCM}
+\author{Nhóm: 24122030 -- 24122035 -- 24122039}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+%--------------------------------------------------------------
+Thành viên nhóm
+\begin{center}
+\begin{tabular}{llp{0cm}}
+\toprule
+\textbf{MSSV} & \textbf{Họ tên} \\
+\midrule
+24122030 & \ Phạm Hoàng Hải Đăng \\
+24122035 & \ Phan Nguyễn Gia Huy \\
+24122039 & \ Nguyễn Đỗ Bảo Kiên \\
+\bottomrule
+\end{tabular}
+\end{center}
+\textbf{Môi trường:} Windows 11 + WSL~2, Ubuntu 26.04 LTS, GCC RISC-V 15.2, QEMU 10.2.1. Mã nguồn: \code{xv6-labs-2024}, nhánh \code{syscall}.
+
+%--------------------------------------------------------------
+\section{Yêu cầu bài tập}
+Thêm vào xv6 system call \code{trace(int mask)} và chương trình người dùng \code{trace}. Mỗi bit của \code{mask} ứng với một system call (bit $i$ ứng với syscall số $i$ trong \code{kernel/syscall.h}). Khi một syscall được theo dõi sắp trả về, kernel in ra dòng
+\begin{center}\code{syscall <tên> -> <giá trị trả về>}\end{center}
+Chỉ tiến trình đã gọi \code{trace} và các tiến trình con của nó bị theo dõi; các tiến trình khác không bị ảnh hưởng. Ví dụ \code{SYS\_read}~$=5$ nên muốn theo dõi \code{read} thì \code{mask}~$=1\ll5=32$.
+
+%--------------------------------------------------------------
+\section{Đường đi của một system call trong xv6}
+Lấy ví dụ chương trình user gọi \code{trace(32)}:
+\begin{enumerate}
+  \item Theo quy ước gọi hàm RISC-V, tham số được truyền qua \code{a0}--\code{a7}; \code{a0}$=32$.
+  \item Stub trong \code{user/usys.S} (do \code{usys.pl} sinh ra) nạp số hiệu syscall vào \code{a7} rồi thực hiện lệnh \code{ecall}.
+  \item \code{ecall} chuyển CPU sang supervisor mode và nhảy tới địa chỉ do kernel định sẵn (\code{stvec}), tức \code{uservec} trong \code{trampoline.S}. Tại đây 32 thanh ghi user được lưu vào \emph{trapframe} và CPU chuyển sang page table của kernel.
+  \item \code{usertrap()} nhận thấy \code{scause}$=8$ (ecall từ U-mode), tăng \code{epc} thêm 4 để quay về lệnh \emph{sau} \code{ecall}, rồi gọi \code{syscall()}.
+  \item \code{syscall()} đọc số hiệu từ \code{trapframe->a7}, tra bảng con trỏ hàm \code{syscalls[]}, gọi \code{sys\_trace()} và ghi kết quả vào \code{trapframe->a0}.
+  \item \code{usertrapret()} $\rightarrow$ \code{userret} $\rightarrow$ \code{sret} khôi phục thanh ghi; \code{a0} chính là giá trị trả về của hàm C ở phía user.
+\end{enumerate}
+Lý do dùng \code{ecall}: chương trình user không được tự chọn điểm vào kernel, nhờ đó kernel luôn kiểm soát được tham số và đảm bảo cách ly (isolation).
+
+%--------------------------------------------------------------
+\section{Các file đã sửa và lý do}
+\begin{center}
+\small
+\begin{tabular}{@{}l p{10.2cm}@{}}
+\toprule
+\textbf{File} & \textbf{Nội dung và lý do} \\
+\midrule
+\code{kernel/syscall.h} & Thêm \code{SYS\_trace} với số hiệu 22 (số cuối cũ là 21). \\
+\code{kernel/proc.h} & Thêm trường \code{trace\_mask} vào \code{struct proc} để mỗi tiến trình có mask riêng; dùng biến toàn cục sẽ ảnh hưởng mọi tiến trình. \\
+\code{kernel/sysproc.c} & Viết \code{sys\_trace()}: lấy tham số bằng \code{argint(0,\&mask)}, lưu vào \code{myproc()->trace\_mask}, trả về 0. \\
+\code{kernel/syscall.c} & Khai báo và đăng ký \code{sys\_trace} trong \code{syscalls[]}; thêm mảng tên syscall; sửa \code{syscall()} để in dòng trace. \\
+\code{kernel/proc.c} & \code{fork()}: con kế thừa mask của cha. \code{freeproc()}: đặt lại mask về 0 để ô \code{struct proc} tái sử dụng không bị ``dính'' mask cũ. \\
+\code{user/user.h}, \code{user/usys.pl} & Khai báo \code{int trace(int)} và thêm \code{entry("trace")} để sinh stub \code{ecall}. \\
+\code{user/trace.c} & Gọi \code{trace(atoi(argv[1]))} rồi \code{exec(argv[2], \&argv[2])}. \\
+\code{Makefile} & Thêm \code{\$U/\_trace} vào \code{UPROGS}; hai chỉnh sửa môi trường cho Ubuntu 26.04 (xem mục~\ref{sec:env}). \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+%--------------------------------------------------------------
+\section{Các quyết định thiết kế}
+\begin{itemize}
+  \item \textbf{In sau khi syscall trả về.} Dòng trace đặt ngay sau lời gọi \code{syscalls[num]()} vì cần giá trị trả về. Điều kiện in là \code{(trace\_mask >> num) \& 1}.
+  \item \textbf{Đọc mask sau khi gọi syscall.} Nhờ vậy chính lời gọi \code{trace} cũng được in (\code{syscall trace -> 0}), vì \code{sys\_trace} vừa ghi mask xong.
+  \item \textbf{Ép kiểu \code{(int)} khi in \code{a0}.} \code{a0} là \code{uint64}; nếu không ép, giá trị lỗi $-1$ sẽ in thành số rất lớn. Đã kiểm tra: khi bảng tiến trình đầy, \code{fork} in ra $-1$.
+  \item \textbf{Mask được giữ qua \code{exec}.} \code{exec} thay bộ nhớ user nhưng giữ nguyên \code{struct proc}, nên \code{grep} vẫn bị theo dõi sau khi \code{trace} gọi \code{exec}.
+  \item \textbf{Shell không bị theo dõi.} Shell \code{fork} ra tiến trình con, chỉ con này gọi \code{trace}; mask nằm trong \code{struct proc} của con.
+  \item \textbf{Kế thừa qua \code{fork}.} Con cháu của tiến trình được trace cũng bị trace. Nếu cần chỉ đúng một tiến trình, bỏ dòng sao chép mask trong \code{fork()}; output mẫu không thay đổi vì \code{grep} không \code{fork}.
+  \item \textbf{\code{exit} không bao giờ được in}, vì \code{exit} không quay về \code{syscall()}. \code{exec} trả về \code{argc} của chương trình mới (3 với \code{grep hello README}).
+\end{itemize}
+
+%--------------------------------------------------------------
+\section{Kết quả chạy}
+Kết quả thực tế trên máy của nhóm:
+\begin{Verbatim}[fontsize=\small,frame=single]
+$ trace 32 grep hello README
+syscall read -> 1023
+syscall read -> 971
+syscall read -> 298
+syscall read -> 0
+$ trace 2147483647 grep hello README
+syscall trace -> 0
+syscall exec -> 3
+syscall open -> 3
+syscall read -> 1023
+syscall read -> 971
+syscall read -> 298
+syscall read -> 0
+syscall close -> 0
+$ grep hello README
+$
+\end{Verbatim}
+
+\begin{figure}[h]
+\centering
+% \includegraphics[width=0.85\textwidth]{screenshot.png}
+\fbox{\parbox{0.85\textwidth}{\centering\vspace{2.2cm}\textit{(Dán ảnh chụp màn hình terminal, thấy rõ prompt/username Ubuntu)}\vspace{2.2cm}}}
+\caption{Kết quả chạy ba lệnh kiểm tra.}
+\end{figure}
+
+\textbf{Giải thích sự khác biệt số byte so với đề.} Đề ghi \code{966} và \code{70}, còn nhóm thu được \code{971} và \code{298}. Nguyên nhân là kích thước file \code{README}: bản trong nhánh \code{syscall} năm 2024 dài 2292 byte (xem bằng \code{ls}), trong khi đề chụp từ bản cũ hơn. \code{grep} đọc vào bộ đệm 1024 byte và giữ lại phần dòng cuối chưa hoàn chỉnh, nên các lần \code{read} sau trả về ít hơn 1024. Tổng $1023+971+298=2292$ khớp với kích thước file. Thứ tự và cấu trúc output giống đề.
+
+Thử thêm: \code{trace 65536 echo hi} ($65536=1\ll16$, \code{SYS\_write}) in hai dòng \code{write}; chữ \code{hi} dính liền dòng trace vì cả kernel và \code{echo} cùng ghi ra console. \code{trace 2 usertests forkforkfork} in nhiều dòng \code{fork}, chứng tỏ con kế thừa mask.
+
+%--------------------------------------------------------------
+\section{Khó khăn gặp phải và cách giải quyết}\label{sec:env}
+Ubuntu 26.04 mới hơn môi trường mà tài liệu môn học hướng tới (Ubuntu 24.04), nên phát sinh các vấn đề sau:
+\begin{enumerate}
+  \item \textbf{Thiếu \code{qemu-system-riscv64}.} Từ Ubuntu 26.04, QEMU RISC-V được tách thành gói riêng \code{qemu-system-riscv}; cần cài thêm.
+  \item \textbf{Lỗi build \code{usertests.c} (\code{rwsbrk}).} GCC 15 mặc định dùng chuẩn C23, trong đó \code{f()} nghĩa là \code{f(void)}, nên gán \code{rwsbrk} vào con trỏ hàm \code{void (*)(char *)} bị coi là sai kiểu. Sửa bằng cách thêm \code{-std=gnu17} vào \code{CFLAGS}. Chọn \code{gnu17} (không phải \code{c17}) để giữ các phần mở rộng GNU như \code{asm volatile} mà xv6 dùng.
+  \item \textbf{xv6 ``đứng hình'' khi boot.} GCC của Ubuntu 26.04 mặc định sinh mã RVA23, ví dụ lệnh nén \code{c.mul} (phần mở rộng Zcb) mà CPU ảo mặc định của QEMU không hỗ trợ. Kết quả là ngoại lệ illegal instruction ngay trong \code{\_entry}; vì \code{mtvec}$=0$ nên CPU nhảy về địa chỉ 0 và lặp vô tận. Sửa bằng \code{-march=rv64gc} cho cả \code{CFLAGS} và \code{ASFLAGS} (file \code{.S} dùng quy tắc riêng, không đọc \code{CFLAGS}).
+  \item \textbf{\code{usertests -q} báo \code{sbrkmuch} FAILED.} Lỗi này có sẵn ở code gốc của nhánh \code{syscall} (MIT cố ý tắt \code{memset} trong \code{kalloc.c} cho phần ``Attack xv6''), không liên quan đến \code{trace}.
+  \item \textbf{Code mẫu trong đề không biên dịch được} nếu chép nguyên: \code{sys\_hello} phải trả về \code{uint64}, và cần \code{\#include "kernel/types.h"} trước \code{"user/user.h"}.
+\end{enumerate}
+Các chỉnh sửa ở mục 2 và 3 chỉ thay đổi môi trường build, không thay đổi hành vi của xv6, và có trong file patch.
+
+%--------------------------------------------------------------
+\section{Kết luận}
+Nhóm đã cài đặt thành công system call \code{trace}: kết quả trùng cấu trúc với output mẫu của đề, tiến trình được trace kế thừa mask qua \code{fork} và giữ qua \code{exec}, các tiến trình khác không bị ảnh hưởng. Qua bài lab, nhóm nắm được đường đi \code{ecall} $\rightarrow$ trapframe $\rightarrow$ \code{syscall()} $\rightarrow$ \code{sys\_*()} $\rightarrow$ \code{sret}, vai trò của \code{struct proc}, và cách quy ước gọi hàm RISC-V được tận dụng để truyền tham số và giá trị trả về.
+
+\end{document}
